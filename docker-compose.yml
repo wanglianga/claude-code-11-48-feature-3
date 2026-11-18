@@ -1,0 +1,97 @@
+# 罕见病多中心登记数据受控分析平台 — 一键启动
+# 架构：db(PostgreSQL) + 6×center-agent(中心本地计算，明细不出院) + backend(FastAPI 编排) + frontend(React)
+
+x-agent: &agent
+  build: ./center_agent
+  volumes:
+    - centerdata:/data:ro   # 中心代理只读本中心数据
+  depends_on:
+    datagen:
+      condition: service_completed_successfully
+  healthcheck:
+    test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:9100/health')\""]
+    interval: 3s
+    timeout: 3s
+    retries: 20
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ccdev
+      POSTGRES_PASSWORD: ccdev
+      POSTGRES_DB: ccdev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccdev"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # 生成六家中心的虚构登记数据（确定性种子），写入共享卷后退出
+  datagen:
+    build: ./center_agent
+    command: python -m center_agent.datagen --root /data
+    volumes:
+      - centerdata:/data
+
+  agent-c1:
+    <<: *agent
+    environment: { CENTER: C1, PORT: "9100", DATA_DIR: /data }
+  agent-c2:
+    <<: *agent
+    environment: { CENTER: C2, PORT: "9100", DATA_DIR: /data }
+  agent-c3:
+    <<: *agent
+    environment: { CENTER: C3, PORT: "9100", DATA_DIR: /data }
+  agent-c4:
+    <<: *agent
+    environment: { CENTER: C4, PORT: "9100", DATA_DIR: /data }
+  agent-c5:
+    <<: *agent
+    environment: { CENTER: C5, PORT: "9100", DATA_DIR: /data }
+  agent-c6:
+    <<: *agent
+    environment: { CENTER: C6, PORT: "9100", DATA_DIR: /data }
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://ccdev:ccdev@db:5432/ccdev
+      SECRET_KEY: compose-demo-secret-change-me
+      SMALL_CELL_K: "5"
+      RUN_EXECUTION: sync
+      SEED_ON_STARTUP: "1"
+      CENTER_AGENTS: >-
+        {"C1":"http://agent-c1:9100","C2":"http://agent-c2:9100",
+         "C3":"http://agent-c3:9100","C4":"http://agent-c4:9100",
+         "C5":"http://agent-c5:9100","C6":"http://agent-c6:9100"}
+    depends_on:
+      db:
+        condition: service_healthy
+      agent-c1:
+        condition: service_healthy
+      agent-c2:
+        condition: service_healthy
+      agent-c3:
+        condition: service_healthy
+      agent-c4:
+        condition: service_healthy
+      agent-c5:
+        condition: service_healthy
+      agent-c6:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:
+  centerdata:
