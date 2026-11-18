@@ -62,6 +62,50 @@ PATH_WEIGHTS = [0.45, 0.45, 0.10]
 OUTCOMES = ["remission", "stable", "progression", "death"]
 OUTCOME_WEIGHTS = [0.45, 0.30, 0.18, 0.07]
 
+# --- Cross-center effect scenarios (for the effect-aggregation feature) -------
+# Remission probability shift of the treated arm (path A) vs control (path B).
+# C1-C3 are large centres with a positive effect; C4 is a mid-size centre whose
+# effect points the OTHER way; C5's treatment arms do not overlap on birth year
+# (no common support); C6 is tiny, so its 2x2 cells fall below the min-cell k.
+EFFECT_SHIFT = {"C1": 0.25, "C2": 0.25, "C3": 0.25, "C4": -0.15, "C5": 0.0, "C6": 0.25}
+BASE_REMISSION = 0.35
+NON_REMISSION = (["stable", "progression", "death"], [0.55, 0.32, 0.13])
+
+# C2: patients born >= 1990 get their outcome determined by sex (remission iff
+# female) instead of by treatment. A plan restricted to birth_year >= 1990 then
+# separates perfectly on sex, so C2's local model cannot converge — the demo
+# scenario for "single-centre model failure".
+C2_SEPARATION_BYEAR = 1990
+
+
+def _sex_for(center: str, path: str, rng: random.Random) -> str:
+    # C4's treated arm skews female (case-mix imbalance across arms).
+    if center == "C4" and path == "A":
+        return "F" if rng.random() < 0.8 else "M"
+    return rng.choice(["F", "M"])
+
+
+def _byear_for(center: str, path: str, rng: random.Random) -> int:
+    # C5: treated and control arms live on disjoint birth-year ranges, so the
+    # covariate common-support check must exclude C5 from pooling.
+    if center == "C5":
+        if path == "A":
+            return rng.randint(1955, 1970)
+        if path == "B":
+            return rng.randint(1985, 2015)
+    return rng.randint(1955, 2015)
+
+
+def _outcome_for(center: str, path: str, sex: str, byear: int,
+                 rng: random.Random) -> str:
+    if center == "C2" and byear >= C2_SEPARATION_BYEAR:
+        return "remission" if sex == "F" else "stable"
+    p = BASE_REMISSION + (EFFECT_SHIFT[center] if path == "A" else 0.0)
+    p = min(0.97, max(0.03, p))
+    if rng.random() < p:
+        return "remission"
+    return rng.choices(NON_REMISSION[0], weights=NON_REMISSION[1], k=1)[0]
+
 
 def generate_center(center: str, root: Path, seed: int | None = None,
                     size: int | None = None) -> dict:
@@ -70,13 +114,13 @@ def generate_center(center: str, root: Path, seed: int | None = None,
     fields = CENTER_FIELDS[center]
     rows = []
     for i in range(1, n + 1):
-        sex = rng.choice(["F", "M"])
-        byear = rng.randint(1955, 2015)
+        path = rng.choices(PATHS, weights=PATH_WEIGHTS, k=1)[0]
+        sex = _sex_for(center, path, rng)
+        byear = _byear_for(center, path, rng)
         dx = rng.choice(DIAGNOSES)
         dx_date = f"{rng.randint(2019, 2024)}-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}"
-        path = rng.choices(PATHS, weights=PATH_WEIGHTS, k=1)[0]
         tx_start = f"{rng.randint(2020, 2025)}-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}"
-        outcome = rng.choices(OUTCOMES, weights=OUTCOME_WEIGHTS, k=1)[0]
+        outcome = _outcome_for(center, path, sex, byear, rng)
         fu_date = f"{rng.randint(2021, 2026)}-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}"
         lab = round(rng.gauss(6.0, 1.8), 2)
         row = {"patient_id": f"{center}-P{i:04d}"}

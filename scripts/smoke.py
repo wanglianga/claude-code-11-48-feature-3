@@ -10,6 +10,13 @@ HTTP center agents). Exercises every acceptance scenario:
   5. small-sample output: review blocks, merge+suppress releases, published
      report carries full provenance and hash-verifies
   6. run comparison endpoint
+  7. cross-center effect aggregation: methodology-approved plans; large vs
+     small centres with opposite effects; no-overlap / small-cell / model-
+     failure centres enter protected categories (never zero-filled); fixed &
+     random pooling with heterogeneity hints and few-centre instability
+     warnings; review-time centre suppression triggers the differencing guard
+     until re-pooled; batch correction forms a new pool version while old
+     reports keep their centre set
 
 Usage: .venv/bin/python scripts/smoke.py  [BASE_URL]
 """
@@ -163,11 +170,17 @@ def main() -> None:
     blocked = httpx.post(f"{BASE}/api/outputs/{out['id']}/decision",
                          headers=rev, json={"action": "approve"})
     check("存在未处理标记时批准被拒绝", blocked.status_code == 409)
+    # merge the two smallest flagged groups, then suppress the remaining cells
+    sizes = {g["label"]: g["n"] for g in out["table_data"]["groups"]}
+    flagged_groups = sorted({f["group"] for f in out["flags"] if f["group"] != "__total__"},
+                            key=lambda g: sizes.get(g, 0))
     step = httpx.post(f"{BASE}/api/outputs/{out['id']}/decision", headers=rev,
                       json={"action": "merge",
-                            "detail": {"groups": ["C / F", "C / M"],
-                                       "into": "C（合并）"}}).json()
+                            "detail": {"groups": flagged_groups[:2],
+                                       "into": "合并组"}}).json()
     cells = [{"group": f["group"], "metric": f["metric"]} for f in step["flags"]]
+    cells += [{"group": "__total__", "metric": f["metric"]}
+              for f in step["flags"] if f["reason"] == "differencing"]
     done = httpx.post(f"{BASE}/api/outputs/{out['id']}/decision", headers=rev,
                       json={"action": "suppress", "detail": {"cells": cells},
                             "comment": "合并+抑制后放行"}).json()
@@ -182,6 +195,121 @@ def main() -> None:
     ver = httpx.get(f"{BASE}/api/reports/{done['published_report_id']}/verify",
                     headers=rev).json()
     check("报告哈希可复现校验", ver["intact"] is True)
+
+    # ---- 6. cross-center effect aggregation ------------------------------------
+    plans = httpx.get(f"{BASE}/api/effect-plans", headers=r1).json()
+    fixed_plan = next(p for p in plans if "固定效应" in p["name"])
+    random_plan = next(p for p in plans if "随机效应" in p["name"])
+    check("种子效应方案已获方法学批准（固定/随机各一）",
+          bool(fixed_plan["approved_version_id"]) and bool(random_plan["approved_version_id"]))
+
+    # 6a. fixed-primary run: opposite directions, protected categories, hints
+    erun = httpx.post(f"{BASE}/api/effect-runs", headers=r1,
+                      json={"plan_version_id": fixed_plan["approved_version_id"]}).json()
+    by_center = {c["center_code"]: c for c in erun["center_results"]}
+    check("主队列：C1-C4 纳入、C5 无共同支持、C6 小单元格抑制",
+          all(by_center[c]["status"] == "included" for c in ("C1", "C2", "C3", "C4"))
+          and by_center["C5"]["status"] == "no_common_support"
+          and by_center["C6"]["status"] == "small_cell_suppressed")
+    check("保护类别中心不传出效应值（无零效应补位）",
+          by_center["C5"]["diagnostics"] is None and by_center["C6"]["diagnostics"] is None)
+    thetas = {c: (by_center[c]["diagnostics"]["effects"]["risk_difference"]["theta"])
+              for c in ("C1", "C2", "C3", "C4")}
+    check("大中心与小中心方向相反",
+          all(thetas[c] > 0 for c in ("C1", "C2", "C3")) and thetas["C4"] < 0)
+    pooling = erun["result"]["pooling"]
+    rd = pooling["measures"]["risk_difference"]
+    hint_types = {h["type"] for h in pooling["hints"]}
+    check("汇总：总体估计+显著异质性+方向不一致提示+少中心随机效应不稳定",
+          rd["fixed"]["theta"] > 0 and rd["heterogeneity"]["I2"] > 50
+          and "direction" in hint_types and "random_stability" in hint_types
+          and "unstable_few_centers" in pooling["stability"])
+    check("报告要素：方法学前提+可比支持范围+贡献范围+未纳入中心",
+          pooling["premises"]["primary_pooling"] == "fixed"
+          and "patient.birth_year" in pooling["support_range"]
+          and rd["contribution_range"]["min"]["center"] == "C4"
+          and {p["center"] for p in erun["result"]["protected"]} == {"C5", "C6"})
+
+    # 6b. random-primary sub-cohort run: single-centre model failure
+    erun2 = httpx.post(f"{BASE}/api/effect-runs", headers=r1,
+                       json={"plan_version_id": random_plan["approved_version_id"]}).json()
+    by2 = {c["center_code"]: c for c in erun2["center_results"]}
+    check("子队列：C2 本地模型不收敛进入保护类别，随机效应为主且标注不稳定",
+          by2["C2"]["status"] == "model_not_converged"
+          and erun2["result"]["pooling"]["premises"]["primary_pooling"] == "random"
+          and "unstable_few_centers" in erun2["result"]["pooling"]["stability"])
+
+    # 6c. review: suppress a centre -> differencing guard -> repool -> publish
+    eout = httpx.post(f"{BASE}/api/effect-runs/{erun['id']}/outputs", headers=r1,
+                      json={"title": "主队列效应汇总（冒烟）"}).json()
+    r = httpx.post(f"{BASE}/api/effect-outputs/{eout['id']}/decision", headers=rev,
+                   json={"action": "suppress_center", "detail": {"center": "C4"}})
+    check("抑制纳入中心触发差分反推标记",
+          r.json()["flag_count"] == 1 and r.json()["flags"][0]["type"] == "differencing")
+    blocked = httpx.post(f"{BASE}/api/effect-outputs/{eout['id']}/decision",
+                         headers=rev, json={"action": "approve"})
+    check("存在差分反推标记时批准被拒绝", blocked.status_code == 409)
+    r = httpx.post(f"{BASE}/api/effect-outputs/{eout['id']}/decision", headers=rev,
+                   json={"action": "repool"})
+    check("重新汇总后标记清除", r.json()["flag_count"] == 0
+          and r.json()["payload"]["pooled_over"] == ["C1", "C2", "C3"])
+    done = httpx.post(f"{BASE}/api/effect-outputs/{eout['id']}/decision", headers=rev,
+                      json={"action": "approve", "comment": "重汇总后放行"}).json()
+    check("效应输出获批并发布", done["status"] == "approved"
+          and done.get("published_report_id"))
+    rep = httpx.get(f"{BASE}/api/effect-reports/{done['published_report_id']}",
+                    headers=rev).json()
+    payload = rep["report"]["payload"]
+    prov = rep["report"]["provenance"]
+    check("效应报告：总体估计/异质性/支持范围/未纳入中心齐备且溯源完整",
+          payload["pooling"]["measures"]["risk_difference"]["fixed"]["theta"] is not None
+          and payload["pooling"]["hints"] and payload["support_range"]
+          and {p["center"] for p in payload["protected"]} == {"C4", "C5", "C6"}
+          and "C4" not in payload["center_diags"]
+          and prov["pool_version"] == erun["pool_version"] and len(prov["batches"]) == 6)
+    ver = httpx.get(f"{BASE}/api/effect-reports/{done['published_report_id']}/verify",
+                    headers=rev).json()
+    check("效应报告哈希可复现校验", ver["intact"] is True)
+
+    # 6d. batch correction forms a NEW pool version; old report keeps its set
+    new_batch = httpx.post(f"{BASE}/api/admin/centers/C2/batches/sync",
+                           headers=admin, json={"label": "2026Q4-效应"}).json()
+    httpx.post(f"{BASE}/api/admin/batches/{new_batch['id']}/lock", headers=admin)
+    erun3 = httpx.post(f"{BASE}/api/effect-runs", headers=r1,
+                       json={"plan_version_id": fixed_plan["approved_version_id"]}).json()
+    check("中心修正批次后只形成新的汇总版本",
+          erun3["pool_version"] == erun["pool_version"] + 1
+          and {b["center_code"]: b["batch_id"] for b in erun3["batches"]}["C2"]
+          == new_batch["id"])
+    old = httpx.get(f"{BASE}/api/effect-reports/{done['published_report_id']}",
+                    headers=r1).json()
+    check("旧报告保留其中心集合与汇总版本",
+          old["report"]["provenance"]["pool_version"] == erun["pool_version"]
+          and old["report"]["payload"]["pooled_over"] == ["C1", "C2", "C3"])
+
+    # 6e. methodology approval gate: unapproved plan cannot run
+    spec = {"cohort_conditions": [
+                {"cid": "i1", "kind": "include", "variable": "diagnosis.code",
+                 "op": "in", "value": ["RD01", "RD02"]}],
+            "treatment_variable": "treatment.path", "treated": "A", "control": "B",
+            "outcome_variable": "followup.outcome", "outcome_value": "remission",
+            "covariates": ["patient.sex"],
+            "covariate_types": {"patient.sex": "categorical"},
+            "measures": ["risk_difference"], "primary_measure": "risk_difference",
+            "primary_pooling": "random"}
+    plan = httpx.post(f"{BASE}/api/effect-plans", headers=r1,
+                      json={"name": "冒烟·未审批方案", "spec": spec}).json()
+    draft_v = plan["versions"][0]["id"]
+    refused = httpx.post(f"{BASE}/api/effect-runs", headers=r1,
+                         json={"plan_version_id": draft_v})
+    check("未获方法学批准的方案不能运行", refused.status_code == 409)
+    httpx.post(f"{BASE}/api/effect-plans/{plan['id']}/versions/{draft_v}/submit",
+               headers=r1)
+    httpx.post(f"{BASE}/api/effect-plans/versions/{draft_v}/approve",
+               headers=rev, json={"comment": "方法学同意"})
+    ok_run = httpx.post(f"{BASE}/api/effect-runs", headers=r1,
+                        json={"plan_version_id": draft_v}).json()
+    check("方法学批准后可运行", ok_run["status"].startswith("completed"))
 
     print(f"\n全部 {len(CHECKS)} 项冒烟检查通过")
 

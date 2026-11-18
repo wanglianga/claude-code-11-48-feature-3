@@ -172,4 +172,53 @@ def seed(db: Session, client=None, wait: bool = True) -> None:
     db.add(version)
     db.flush()
     rule.current_version_id = version.id
+    db.flush()
+
+    # Demo effect plans (methodology-approved): cross-center effect aggregation.
+    from .models import EffectPlan, EffectPlanVersion  # noqa: PLC0415
+
+    effect_base = {
+        "treatment_variable": "treatment.path", "treated": "A", "control": "B",
+        "outcome_variable": "followup.outcome", "outcome_value": "remission",
+        "covariates": ["patient.sex", "patient.birth_year"],
+        "covariate_types": {"patient.sex": "categorical",
+                            "patient.birth_year": "numeric"},
+        "measures": ["risk_difference", "log_odds_ratio_adjusted"],
+        "primary_measure": "risk_difference",
+    }
+    plan1 = EffectPlan(name="路径A vs 路径B 缓解效应汇总（固定效应为主）", owner_id=2)
+    db.add(plan1)
+    db.flush()
+    spec1 = {**effect_base,
+             "cohort_conditions": DEMO_RULE_CONDITIONS,
+             "primary_pooling": "fixed"}
+    v1 = EffectPlanVersion(
+        plan_id=plan1.id, version_no=1, status="approved", spec=spec1,
+        spec_hash=content_hash(spec1), created_by=2,
+        submitted_at=datetime.now(timezone.utc),
+        reviewed_by=4, reviewed_at=datetime.now(timezone.utc),
+        review_comment="方法学审查通过：共同效应假设下以固定效应为主，随机效应作敏感性分析",
+    )
+    db.add(v1)
+    db.flush()
+    plan1.current_version_id = v1.id
+
+    plan2 = EffectPlan(name="高出生年子队列效应汇总（随机效应为主）", owner_id=2)
+    db.add(plan2)
+    db.flush()
+    spec2 = {**effect_base,
+             "cohort_conditions": DEMO_RULE_CONDITIONS + [
+                 {"cid": "inc-yob90", "kind": "include",
+                  "variable": "patient.birth_year", "op": "ge", "value": 1990}],
+             "primary_pooling": "random"}
+    v2 = EffectPlanVersion(
+        plan_id=plan2.id, version_no=1, status="approved", spec=spec2,
+        spec_hash=content_hash(spec2), created_by=2,
+        submitted_at=datetime.now(timezone.utc),
+        reviewed_by=4, reviewed_at=datetime.now(timezone.utc),
+        review_comment="方法学审查通过：允许中心间变异，以随机效应吸收中心差异",
+    )
+    db.add(v2)
+    db.flush()
+    plan2.current_version_id = v2.id
     db.commit()

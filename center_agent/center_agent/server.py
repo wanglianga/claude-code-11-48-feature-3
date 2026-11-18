@@ -23,7 +23,8 @@ class Job(BaseModel):
     job_id: str | None = None
     dict_version: str | None = None
     conditions: list[dict] = []
-    request_spec: dict
+    request_spec: dict | None = None      # aggregate jobs
+    effect_spec: dict | None = None       # effect jobs (local model diagnostics)
     mapping: dict[str, dict]
 
 

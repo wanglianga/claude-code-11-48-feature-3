@@ -10,7 +10,19 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .db import Base, SessionLocal, engine
-from .routers import admin, auth, meta, outputs, reports, rules, runs
+from .routers import (
+    admin,
+    auth,
+    effect_outputs,
+    effect_plans,
+    effect_reports,
+    effect_runs,
+    meta,
+    outputs,
+    reports,
+    rules,
+    runs,
+)
 from .seed import seed
 
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +43,10 @@ app.include_router(rules.router)
 app.include_router(runs.router)
 app.include_router(outputs.router)
 app.include_router(reports.router)
+app.include_router(effect_plans.router)
+app.include_router(effect_runs.router)
+app.include_router(effect_outputs.router)
+app.include_router(effect_reports.router)
 
 
 @app.on_event("startup")

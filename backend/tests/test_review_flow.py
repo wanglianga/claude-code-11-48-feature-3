@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 from conftest import run_payload  # noqa: F401  (imported for reuse clarity)
 
-# cohort slice engineered to contain groups below k=5 (C/F=4, C/M=2)
+# cohort slice engineered to contain groups below k=5 (the exact small groups
+# depend on the demo data; the flow below discovers them from the flags)
 SMALL_RULE_CONDITIONS = [
     {"cid": "inc-dx", "kind": "include", "variable": "diagnosis.code",
      "op": "eq", "value": "RD03"},
@@ -18,6 +19,20 @@ SMALL_SPEC = {
                 {"type": "outcome_count", "variable": "followup.outcome",
                  "value": "remission"}],
 }
+
+
+def _flagged_groups(output: dict) -> list[str]:
+    return sorted({f["group"] for f in output["flags"] if f["group"] != "__total__"})
+
+
+def _cells_with_totals(flags: list[dict]) -> list[dict]:
+    """Flagged cells plus the column total whenever a differencing flag is
+    present (a single hidden cell is derivable from a visible total)."""
+    cells = [{"group": f["group"], "metric": f["metric"]} for f in flags]
+    for f in flags:
+        if f["reason"] == "differencing":
+            cells.append({"group": "__total__", "metric": f["metric"]})
+    return cells
 
 
 @pytest.fixture()
@@ -46,27 +61,28 @@ def test_small_sample_output_blocked_then_merged_and_published(
     output = r.json()
     assert output["status"] == "pending_review"
     assert output["flag_count"] > 0
-    small_groups = {f["group"] for f in output["flags"]}
-    assert {"C / F", "C / M"} <= small_groups
+    small_groups = _flagged_groups(output)
+    assert len(small_groups) >= 2
 
     # a plain approve is refused while flags are unresolved
     r = client.post(f"/api/outputs/{output['id']}/decision", headers=reviewer,
                     json={"action": "approve", "comment": "try"})
     assert r.status_code == 409
 
-    # step 1: reviewer merges the two small C-path groups
+    # step 1: reviewer merges the two smallest flagged groups
+    sizes = {g["label"]: g["n"] for g in output["table_data"]["groups"]}
+    pair = sorted(small_groups, key=lambda g: sizes.get(g, 0))[:2]
     r = client.post(f"/api/outputs/{output['id']}/decision", headers=reviewer,
                     json={"action": "merge",
-                          "detail": {"groups": ["C / F", "C / M"],
-                                     "into": "C（合并）"},
-                          "comment": "合并 C 路径小组"})
+                          "detail": {"groups": pair, "into": "合并组"},
+                          "comment": "合并小组"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["status"] == "pending_review"  # remission counts still small
-    assert body["flag_count"] > 0
+    assert body["status"] == "pending_review"
 
-    # step 2: suppress the remaining small cells flagged by re-analysis
-    cells = [{"group": f["group"], "metric": f["metric"]} for f in body["flags"]]
+    # step 2: suppress the remaining flagged cells (with totals when a single
+    # hidden cell would be derivable by differencing)
+    cells = _cells_with_totals(body["flags"])
     r = client.post(f"/api/outputs/{output['id']}/decision", headers=reviewer,
                     json={"action": "suppress", "detail": {"cells": cells},
                           "comment": "抑制剩余小格后放行"})
@@ -93,7 +109,7 @@ def test_suppress_path_also_releases(client, researcher1, reviewer, small_run):
     r = client.post(f"/api/runs/{small_run['id']}/outputs", headers=researcher1,
                     json={"title": "抑制路径验证"})
     output = r.json()
-    cells = [{"group": f["group"], "metric": f["metric"]} for f in output["flags"]]
+    cells = _cells_with_totals(output["flags"])
     r = client.post(f"/api/outputs/{output['id']}/decision", headers=reviewer,
                     json={"action": "suppress", "detail": {"cells": cells},
                           "comment": "抑制全部小格"})

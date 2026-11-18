@@ -10,6 +10,12 @@ import Compare from './pages/Compare'
 import Review from './pages/Review'
 import ReviewDetail from './pages/ReviewDetail'
 import Reports from './pages/Reports'
+import EffectPlans from './pages/EffectPlans'
+import EffectPlanDetail from './pages/EffectPlanDetail'
+import EffectRuns from './pages/EffectRuns'
+import EffectRunDetail from './pages/EffectRunDetail'
+import EffectReview from './pages/EffectReview'
+import EffectReviewDetail from './pages/EffectReviewDetail'
 
 const ROLE_HOME = {
   data_admin: '/admin',
@@ -26,8 +32,14 @@ function Nav() {
     links.push(['/rules', '队列规则'])
     links.push(['/runs', '运行'])
     links.push(['/compare', '运行对比'])
+    links.push(['/effect-plans', '研究方案'])
+    links.push(['/effect-runs', '效应运行'])
   }
-  if (user.role === 'reviewer') links.push(['/review', '审查队列'])
+  if (user.role === 'reviewer') {
+    links.push(['/review', '审查队列'])
+    links.push(['/effect-plans', '研究方案'])
+    links.push(['/effect-review', '效应审查'])
+  }
   links.push(['/reports', '已发布报告'])
   return (
     <nav className="nav">
@@ -68,6 +80,12 @@ export default function App() {
           <Route path="/compare" element={<Guard><Compare /></Guard>} />
           <Route path="/review" element={<Guard><Review /></Guard>} />
           <Route path="/review/:id" element={<Guard><ReviewDetail /></Guard>} />
+          <Route path="/effect-plans" element={<Guard><EffectPlans /></Guard>} />
+          <Route path="/effect-plans/:id" element={<Guard><EffectPlanDetail /></Guard>} />
+          <Route path="/effect-runs" element={<Guard><EffectRuns /></Guard>} />
+          <Route path="/effect-runs/:id" element={<Guard><EffectRunDetail /></Guard>} />
+          <Route path="/effect-review" element={<Guard><EffectReview /></Guard>} />
+          <Route path="/effect-review/:id" element={<Guard><EffectReviewDetail /></Guard>} />
           <Route path="/reports" element={<Guard><Reports /></Guard>} />
           <Route path="*" element={<Navigate to={user ? ROLE_HOME[user.role] || '/reports' : '/login'} replace />} />
         </Routes>
